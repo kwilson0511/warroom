@@ -1,0 +1,30 @@
+name: Daily data refresh
+
+# Pulls fresh players / rookies / news / injuries from Sleeper + RSS into
+# Supabase. Runs once a day, and can be triggered manually from the Actions tab.
+#
+# Requires two repo secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+#
+# NOTE: this does NOT re-seed the curated data (coaches, sleepers, K/DEF ranks).
+# Those are opinion snapshots — re-run their seed scripts by hand near the draft.
+
+on:
+  schedule:
+    - cron: "0 11 * * *" # 11:00 UTC daily (~6-7am US Eastern)
+  workflow_dispatch: {} # manual "Run workflow" button
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: node scripts/refresh.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
