@@ -273,6 +273,32 @@ async function refreshRookies(raw) {
   console.log(`  upserted ${rows.length} rookies`);
 }
 
+// ---- 1c. Depth charts (all rostered players on a depth chart) -----------
+async function refreshDepthChart(raw) {
+  const now = new Date().toISOString();
+  const rows = Object.values(raw)
+    .filter(
+      (p) =>
+        p.active &&
+        p.team &&
+        ["QB", "RB", "WR", "TE", "K"].includes(p.position) &&
+        p.depth_chart_order != null
+    )
+    .map((p) => ({
+      id: p.player_id,
+      name: playerName(p),
+      pos: p.position,
+      team: p.team,
+      depth_position: p.depth_chart_position || p.position,
+      depth_order: p.depth_chart_order,
+      updated_at: now,
+    }))
+    .sort((a, b) => a.depth_order - b.depth_order);
+
+  await upsertBatched("depth_chart", rows);
+  console.log(`  upserted ${rows.length} depth-chart entries`);
+}
+
 // ---- 2. News from RSS --------------------------------------
 async function refreshNews(players) {
   console.log("Fetching RSS feeds…");
@@ -317,6 +343,7 @@ async function main() {
   const raw = await fetchSleeperPlayers();
   const players = await refreshPlayers(raw);
   await refreshRookies(raw);
+  await refreshDepthChart(raw);
   await refreshNews(players);
   console.log("Refresh complete.");
 }

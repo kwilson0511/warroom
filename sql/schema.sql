@@ -80,6 +80,21 @@ create table if not exists sleepers (
 
 create index if not exists sleepers_player_id_idx on sleepers (player_id);
 
+-- ---- Depth charts (full rosters; refreshed daily from Sleeper) ---------
+-- One row per rostered player that appears on their team's depth chart.
+-- depth_order 1 = starter. Grouped by team + position in the Teams view.
+create table if not exists depth_chart (
+  id             text primary key,        -- Sleeper player_id
+  name           text not null,
+  pos            text,                    -- QB / RB / WR / TE / K
+  team           text,
+  depth_position text,                    -- Sleeper's slot (e.g. RB, LWR, SWR)
+  depth_order    int,                     -- 1 = starter, 2 = backup, ...
+  updated_at     timestamptz default now()
+);
+
+create index if not exists depth_chart_team_idx on depth_chart (team);
+
 -- ---- Coaches (curated snapshot; seeded by scripts/seed-coaches.mjs) ----
 -- One row per team. `is_new` marks head coaches hired for the current
 -- offseason so the Teams view can badge them.
@@ -107,3 +122,4 @@ alter table news        enable row level security;
 alter table coaches     enable row level security;
 alter table rookies     enable row level security;
 alter table sleepers    enable row level security;
+alter table depth_chart enable row level security;

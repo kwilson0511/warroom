@@ -70,6 +70,15 @@ interface Coach {
   def_coordinator: string | null;
 }
 
+interface DepthEntry {
+  id: string;
+  name: string;
+  pos: string;
+  team: string;
+  depth_position: string | null;
+  depth_order: number | null;
+}
+
 // What the news drawer is currently showing: the team overview (a list of
 // all teams), a single team's news, or one player's news.
 type Drawer =
@@ -150,6 +159,7 @@ export default function DraftBoard() {
   const [drawer, setDrawer] = useState<Drawer | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [coaches, setCoaches] = useState<Record<string, Coach>>({});
+  const [depth, setDepth] = useState<DepthEntry[]>([]);
   const [rookies, setRookies] = useState<Rookie[]>([]);
   const [sleepers, setSleepers] = useState<Sleeper[]>([]);
 
@@ -206,6 +216,17 @@ export default function DraftBoard() {
       })
       .catch(() => setCoaches({}));
   }, []);
+
+  // A team's depth chart — loaded when a team drawer opens.
+  useEffect(() => {
+    if (!drawer || drawer.kind !== "team") return;
+    fetch(`/api/depth?team=${encodeURIComponent(drawer.team)}`, {
+      cache: "no-store",
+    })
+      .then((r) => r.json())
+      .then((d) => setDepth(d.depth || []))
+      .catch(() => setDepth([]));
+  }, [drawer]);
 
   // Full rookie class — loaded once for the Rookies view.
   useEffect(() => {
@@ -352,6 +373,17 @@ export default function DraftBoard() {
     });
     return { priority, byMonth };
   }, [dedupedNews]);
+
+  // Current team's depth chart grouped by position, starters first.
+  const depthByPos = useMemo(() => {
+    const m: Record<string, DepthEntry[]> = {};
+    [...depth]
+      .sort((a, b) => (a.depth_order ?? 99) - (b.depth_order ?? 99))
+      .forEach((d) => {
+        (m[d.pos] ||= []).push(d);
+      });
+    return m;
+  }, [depth]);
 
   // Unique teams present on the board (drop free agents), alphabetized.
   const teamList = useMemo(() => {
@@ -813,6 +845,29 @@ export default function DraftBoard() {
                         )}
                       </div>
                     )}
+                    {depth.length > 0 && (
+                      <div className="depth-chart">
+                        <div className="tier-head">
+                          <span className="tier-num">Depth Chart</span>
+                          <span className="tier-rule" />
+                        </div>
+                        {["QB", "RB", "WR", "TE", "K"].map((dp) =>
+                          depthByPos[dp]?.length ? (
+                            <div key={dp} className="depth-row">
+                              <span className="depth-pos">{dp}</span>
+                              <span className="depth-players">
+                                {depthByPos[dp].map((d, i) => (
+                                  <span key={d.id}>
+                                    {i > 0 ? " · " : ""}
+                                    {d.name}
+                                  </span>
+                                ))}
+                              </span>
+                            </div>
+                          ) : null
+                        )}
+                      </div>
+                    )}
                   </>
                 )}
                 <a
@@ -934,6 +989,11 @@ const css = `
 .coach-name{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-family:"Georgia",serif;font-weight:800;font-size:16px;}
 .coach-name--sm{font-size:14px;font-weight:700;}
 .coach-since{font-size:11px;color:var(--muted);font-weight:400;font-family:ui-sans-serif,-apple-system,"Segoe UI",system-ui,sans-serif;}
+.depth-chart{margin-bottom:16px;}
+.depth-row{display:grid;grid-template-columns:34px 1fr;gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--paper-line);}
+.depth-pos{font-family:"Georgia",serif;font-weight:800;font-size:13px;color:var(--accent);}
+.depth-players{font-size:13px;line-height:1.5;}
+.depth-players span:first-child{font-weight:700;}
 .rookie-view{display:flex;flex-direction:column;gap:18px;}
 .rookie-group .tier-head{margin-bottom:6px;}
 .rookie-row{display:grid;grid-template-columns:34px minmax(110px,1.4fr) 44px minmax(0,1.4fr);align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid var(--paper-line);font-size:14px;}
