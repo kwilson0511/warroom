@@ -1,36 +1,35 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# War Room 🏈
 
-## Getting Started
+A personal fantasy football draft board and season tracker, built with Next.js + Supabase.
 
-First, run the development server:
+## What it does
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- **Draft board** — players in tiers by ADP, with position filters and search
+- **Favorites** — shared and synced across devices
+- **Rookie tracker** and **curated sleeper picks**
+- **Team hub** — open a team to see its coaching staff, depth chart, and news
+- **Injury report** and a **league-wide news feed** that floats injury/transaction items to the top
+- **Per-player news** — click a player to see (or search) the latest reporting
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## How the data stays fresh
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **Daily auto-refresh:** a GitHub Action (`.github/workflows/refresh.yml`) runs `scripts/refresh.mjs` every morning, pulling players, rookies, depth charts, injuries, and news from the [Sleeper API](https://docs.sleeper.com) + RSS feeds into Supabase.
+- **Curated data** (opinion snapshots — re-run manually near the draft):
+  - Coaching staffs: `node --env-file=.env.local scripts/seed-coaches.mjs`
+  - Sleeper picks: `node --env-file=.env.local scripts/seed-sleepers.mjs`
+  - K/DEF rankings live in the `DEF_RANK` / `K_RANK` lists in `scripts/refresh.mjs`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Run locally
 
-## Learn More
+1. Copy `.env.example` to `.env.local` and fill in your Supabase URL + service-role key
+2. `npm install`
+3. `npm run dev` → open http://localhost:3000/board
 
-To learn more about Next.js, take a look at the following resources:
+## Database
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Run `sql/schema.sql` once on a fresh Supabase project to create every table.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Deploy
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Hosted on Vercel, auto-deploys on every push to `main`. The service-role key is set
+in Vercel's environment variables and GitHub Actions secrets — never committed.
