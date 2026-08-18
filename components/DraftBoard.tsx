@@ -15,7 +15,13 @@ import { useState, useEffect, useMemo, useCallback } from "react";
  * same board update on both devices (poll every 8s below).
  */
 
-type Status = "available" | "mine" | "taken";
+type Status = "available" | "mine" | "kyle" | "taken";
+
+interface League {
+  id: string;
+  name: string;
+  sort: number;
+}
 
 interface Player {
   id: string;
@@ -130,8 +136,13 @@ function dedupeByTitle(items: NewsItem[]) {
 }
 
 const POSITIONS = ["ALL", "QB", "RB", "WR", "TE", "K", "DEF"];
-const NEXT_STATUS: Record<Status, Status> = { available: "mine", mine: "taken", taken: "available" };
-const STATUS_LABEL: Record<Status, string> = { available: "", mine: "MINE", taken: "taken" };
+const STATUS_LABEL: Record<Status, string> = {
+  available: "",
+  mine: "MINE",
+  kyle: "KYLE",
+  taken: "TAKEN",
+};
+const LS_LEAGUE_KEY = "warroom.league"; // remembers league choice per device
 
 function assignTier(adp: number) {
   if (adp <= 3) return 1;
@@ -150,11 +161,15 @@ const TIER_LABELS: Record<number, string> = {
 
 export default function DraftBoard() {
   const [players, setPlayers] = useState<Player[] | null>(null);
+  const [leagues, setLeagues] = useState<League[]>([]);
+  const [league, setLeague] = useState("l1"); // starts at l1 (SSR-safe), then localStorage
   const [pos, setPos] = useState("ALL");
   const [query, setQuery] = useState("");
   const [favOnly, setFavOnly] = useState(false);
   const [rookieOnly, setRookieOnly] = useState(false);
   const [sleeperOnly, setSleeperOnly] = useState(false);
+  const [mineOnly, setMineOnly] = useState(false);
+  const [kyleOnly, setKyleOnly] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<Drawer | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
@@ -165,7 +180,9 @@ export default function DraftBoard() {
 
   const loadBoard = useCallback(async () => {
     try {
-      const res = await fetch("/api/board", { cache: "no-store" });
+      const res = await fetch(`/api/board?league=${encodeURIComponent(league)}`, {
+        cache: "no-store",
+      });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setPlayers(data.players);
@@ -173,12 +190,33 @@ export default function DraftBoard() {
     } catch (e) {
       setErr((e as Error).message);
     }
+  }, [league]);
+
+  // Restore the last-used league on this device (client-only, after mount so
+  // it doesn't mismatch the server-rendered default).
+  useEffect(() => {
+    const saved = localStorage.getItem(LS_LEAGUE_KEY);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (saved) setLeague(saved);
   }, []);
 
-  // Initial load + light polling so both drafters stay in sync.
-  // The first load is dispatched via a 0ms timer (rather than called
-  // directly) so it kicks off right after mount without counting as a
-  // synchronous setState inside the effect body.
+  // Remember the league choice per device.
+  useEffect(() => {
+    localStorage.setItem(LS_LEAGUE_KEY, league);
+  }, [league]);
+
+  // Load the 3 leagues (names) once.
+  useEffect(() => {
+    fetch("/api/leagues", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setLeagues(d.leagues || []))
+      .catch(() => setLeagues([]));
+  }, []);
+
+  // Initial load + light polling so both drafters stay in sync. Re-runs when
+  // the league changes (loadBoard depends on league), refetching that league.
+  // The first load is dispatched via a 0ms timer (rather than called directly)
+  // so it isn't a synchronous setState inside the effect body.
   useEffect(() => {
     const kickoff = setTimeout(loadBoard, 0);
     const t = setInterval(loadBoard, 8000);
@@ -244,8 +282,11 @@ export default function DraftBoard() {
       .catch(() => setSleepers([]));
   }, []);
 
-  async function cycleStatus(player: Player) {
-    const next = NEXT_STATUS[player.status || "available"];
+  // Assign a draft pick for the CURRENT league. Tapping the active status
+  // again clears it back to available. Per-league, so it doesn't affect
+  // your other leagues.
+  async function setPick(player: Player, target: Status) {
+    const next: Status = player.status === target ? "available" : target;
     // Optimistic update so taps feel instant.
     setPlayers((ps) =>
       ps!.map((p) => (p.id === player.id ? { ...p, status: next } : p))
@@ -253,8 +294,23 @@ export default function DraftBoard() {
     await fetch("/api/board", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ playerId: player.id, status: next }),
+      body: JSON.stringify({ league, playerId: player.id, status: next }),
     }).catch(() => loadBoard()); // reload on failure to resync
+  }
+
+  async function renameLeague() {
+    const current = leagues.find((l) => l.id === league);
+    const name = window.prompt("League name:", current?.name || "");
+    if (!name || !name.trim()) return;
+    const trimmed = name.trim().slice(0, 40);
+    setLeagues((ls) =>
+      ls.map((l) => (l.id === league ? { ...l, name: trimmed } : l))
+    );
+    await fetch("/api/leagues", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: league, name: trimmed }),
+    }).catch(() => {});
   }
 
   async function toggleFavorite(player: Player) {
@@ -283,12 +339,24 @@ export default function DraftBoard() {
       .filter((p) => (favOnly ? p.favorite : true))
       .filter((p) => (rookieOnly ? p.rookie : true))
       .filter((p) => (sleeperOnly ? sleeperIds.has(p.id) : true))
+      .filter((p) => (mineOnly ? p.status === "mine" : true))
+      .filter((p) => (kyleOnly ? p.status === "kyle" : true))
       .filter((p) =>
         query.trim()
           ? (p.name + p.team).toLowerCase().includes(query.toLowerCase())
           : true
       );
-  }, [players, pos, query, favOnly, rookieOnly, sleeperOnly, sleeperIds]);
+  }, [
+    players,
+    pos,
+    query,
+    favOnly,
+    rookieOnly,
+    sleeperOnly,
+    mineOnly,
+    kyleOnly,
+    sleeperIds,
+  ]);
 
   // Rookie class grouped by position for the dedicated Rookies view.
   const rookiesByPos = useMemo(() => {
@@ -317,6 +385,7 @@ export default function DraftBoard() {
   }, [filtered]);
 
   const mineCount = (players || []).filter((p) => p.status === "mine").length;
+  const kyleCount = (players || []).filter((p) => p.status === "kyle").length;
   const favCount = (players || []).filter((p) => p.favorite).length;
 
   // Clean sequential rank (1..N) by board order — the API returns players
@@ -415,7 +484,8 @@ export default function DraftBoard() {
           <h1>Draft Board</h1>
         </div>
         <div className="masthead-right">
-          <span className="tally">{mineCount} on my roster</span>
+          <span className="tally">{mineCount} mine</span>
+          <span className="tally tally--kyle">{kyleCount} Kyle</span>
           <span className="tally tally--fav">★ {favCount} following</span>
           {lastUpdated && (
             <span className="asof">
@@ -425,6 +495,27 @@ export default function DraftBoard() {
           {err && <span className="err">Connection issue — retrying…</span>}
         </div>
       </header>
+
+      {/* League selector — draft picks are tracked separately per league. */}
+      <div className="league-bar">
+        <span className="league-label">League:</span>
+        {leagues.map((l) => (
+          <button
+            key={l.id}
+            className={`league-tab ${league === l.id ? "league-tab--on" : ""}`}
+            onClick={() => setLeague(l.id)}
+          >
+            {l.name}
+          </button>
+        ))}
+        <button
+          className="league-rename"
+          onClick={renameLeague}
+          title="Rename this league"
+        >
+          ✎
+        </button>
+      </div>
 
       <div className="controls">
         <div className="pos-filter">
@@ -457,6 +548,20 @@ export default function DraftBoard() {
             title="Show only curated sleeper picks"
           >
             Sleepers
+          </button>
+          <button
+            className={`chip chip--mine ${mineOnly ? "chip--on" : ""}`}
+            onClick={() => setMineOnly((v) => !v)}
+            title="Show only my picks in this league"
+          >
+            My Team
+          </button>
+          <button
+            className={`chip chip--kyle ${kyleOnly ? "chip--on" : ""}`}
+            onClick={() => setKyleOnly((v) => !v)}
+            title="Show only Kyle's picks in this league"
+          >
+            Kyle
           </button>
         </div>
         <div className="controls-right">
@@ -524,13 +629,29 @@ export default function DraftBoard() {
               <ul className="rows">
                 {tiers[t].map((p) => (
                   <li key={p.id} className={`row row--${p.status || "available"}`}>
-                    <button
-                      className="strike"
-                      title="Cycle: available → mine → taken"
-                      onClick={() => cycleStatus(p)}
-                    >
-                      {p.status === "mine" ? "✓" : p.status === "taken" ? "✕" : "○"}
-                    </button>
+                    <span className="pick">
+                      <button
+                        className={`pk pk--m ${p.status === "mine" ? "on" : ""}`}
+                        onClick={() => setPick(p, "mine")}
+                        title="Mine"
+                      >
+                        M
+                      </button>
+                      <button
+                        className={`pk pk--k ${p.status === "kyle" ? "on" : ""}`}
+                        onClick={() => setPick(p, "kyle")}
+                        title="Kyle"
+                      >
+                        K
+                      </button>
+                      <button
+                        className={`pk pk--t ${p.status === "taken" ? "on" : ""}`}
+                        onClick={() => setPick(p, "taken")}
+                        title="Taken (someone else)"
+                      >
+                        T
+                      </button>
+                    </span>
                     <span className="adp">{rankById[p.id]}</span>
                     <span className={`postag postag--${p.pos}`}>{p.pos}</span>
                     <span className="pname">
@@ -914,7 +1035,15 @@ const css = `
   font-family:"Georgia","Times New Roman",serif;font-weight:800;}
 .masthead-right{text-align:right;display:flex;flex-direction:column;gap:3px;}
 .tally{font-size:12px;color:var(--accent);font-weight:700;}
+.tally--kyle{color:#3a6ea5;}
 .tally--fav{color:var(--amber);}
+.league-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:16px;padding-bottom:12px;border-bottom:1px dashed var(--paper-line);}
+.league-label{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700;}
+.league-tab{border:1px solid var(--paper-line);background:transparent;color:var(--muted);padding:5px 14px;border-radius:2px;font-size:13px;font-weight:700;cursor:pointer;transition:all .12s;}
+.league-tab:hover{border-color:var(--accent);color:var(--accent);}
+.league-tab--on{background:var(--accent);border-color:var(--accent);color:var(--paper);}
+.league-rename{background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;padding:4px;}
+.league-rename:hover{color:var(--accent);}
 .err{font-size:11px;color:var(--amber);}
 .asof{font-size:11px;color:var(--muted);}
 .controls{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap;}
@@ -929,6 +1058,12 @@ const css = `
 .chip--sleeper.chip--on{background:#6b4c9a;border-color:#6b4c9a;color:var(--paper);}
 .chip--sleeper:hover{border-color:#6b4c9a;color:#6b4c9a;}
 .chip--sleeper.chip--on:hover{color:var(--paper);}
+.chip--mine.chip--on{background:var(--accent);border-color:var(--accent);color:var(--paper);}
+.chip--mine:hover{border-color:var(--accent);color:var(--accent);}
+.chip--mine.chip--on:hover{color:var(--paper);}
+.chip--kyle.chip--on{background:#3a6ea5;border-color:#3a6ea5;color:var(--paper);}
+.chip--kyle:hover{border-color:#3a6ea5;color:#3a6ea5;}
+.chip--kyle.chip--on:hover{color:var(--paper);}
 .search{border:none;border-bottom:1px solid var(--ink);background:transparent;padding:6px 2px;font-size:14px;color:var(--ink);min-width:200px;outline:none;}
 .search::placeholder{color:var(--muted);}
 .search:focus{border-bottom-color:var(--accent);}
@@ -941,14 +1076,19 @@ const css = `
 .tier-label{font-size:12px;color:var(--muted);letter-spacing:.04em;text-transform:uppercase;}
 .tier-rule{flex:1;height:1px;background:var(--paper-line);}
 .rows{list-style:none;margin:0;padding:0;}
-.row{display:grid;grid-template-columns:28px 34px 40px minmax(140px,1.2fr) 52px 58px minmax(0,2fr);
+.row{display:grid;grid-template-columns:86px 34px 40px minmax(140px,1.2fr) 52px 58px minmax(0,2fr);
   align-items:center;gap:10px;padding:7px 6px;border-bottom:1px solid var(--paper-line);font-size:14px;}
 .row:hover{background:rgba(47,93,80,.05);}
-.row--taken{opacity:.4;}
+.row--taken{opacity:.45;}
 .row--taken .pname{text-decoration:line-through;}
-.row--mine{background:rgba(47,93,80,.09);}
-.strike{width:22px;height:22px;border:1px solid var(--paper-line);border-radius:2px;background:transparent;cursor:pointer;font-size:12px;color:var(--muted);line-height:1;padding:0;}
-.strike:hover{border-color:var(--accent);color:var(--accent);}
+.row--mine{background:rgba(47,93,80,.10);}
+.row--kyle{background:rgba(58,110,165,.10);}
+.pick{display:flex;gap:3px;}
+.pk{width:24px;height:24px;border:1px solid var(--paper-line);border-radius:2px;background:transparent;cursor:pointer;font-size:11px;font-weight:800;color:var(--muted);line-height:1;padding:0;transition:all .1s;}
+.pk:hover{border-color:var(--ink);}
+.pk--m.on{background:var(--accent);border-color:var(--accent);color:var(--paper);}
+.pk--k.on{background:#3a6ea5;border-color:#3a6ea5;color:var(--paper);}
+.pk--t.on{background:var(--muted);border-color:var(--muted);color:var(--paper);}
 .adp{font-family:"Georgia",serif;font-weight:700;color:var(--muted);text-align:right;font-size:13px;}
 .postag{font-size:10px;font-weight:800;letter-spacing:.05em;text-align:center;}
 .postag--QB{color:#7a3b8f;}.postag--RB{color:var(--accent);}.postag--WR{color:var(--amber);}
@@ -961,6 +1101,7 @@ const css = `
 .fav--on{color:var(--amber);}
 .badge{font-style:normal;font-size:9px;font-weight:800;letter-spacing:.08em;padding:1px 5px;border-radius:2px;}
 .badge--mine{background:var(--mine);color:var(--paper);}
+.badge--kyle{background:#3a6ea5;color:var(--paper);}
 .badge--taken{background:var(--paper-line);color:var(--muted);}
 .badge--rookie{background:#3a6ea5;color:var(--paper);}
 .badge--sleeper{background:#6b4c9a;color:var(--paper);}
@@ -1019,7 +1160,7 @@ const css = `
 .news-src{font-size:11px;color:var(--muted);letter-spacing:.04em;}
 @media (max-width:640px){
   .masthead h1{font-size:30px;}
-  .row{grid-template-columns:24px 28px 34px 1fr auto;row-gap:2px;}
+  .row{grid-template-columns:82px 28px 34px 1fr auto;row-gap:2px;}
   .pbye,.pnote{display:none;}
 }
 `;

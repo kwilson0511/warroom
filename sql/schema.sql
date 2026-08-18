@@ -30,6 +30,31 @@ create table if not exists draft_state (
   updated_at  timestamptz default now()
 );
 
+-- ---- Leagues + per-league draft picks ----------------------
+-- draft_state (above) holds GLOBAL favorites. Draft picks are PER-LEAGUE:
+-- the same player can be "mine" in one league and "taken" in another.
+create table if not exists leagues (
+  id   text primary key,
+  name text not null,
+  sort int default 0
+);
+
+insert into leagues (id, name, sort) values
+  ('l1', 'League 1', 1),
+  ('l2', 'League 2', 2),
+  ('l3', 'League 3', 3)
+  on conflict (id) do nothing;
+
+create table if not exists draft_picks (
+  league     text not null,
+  player_id  text not null,
+  status     text not null,          -- mine / kyle / taken
+  updated_at timestamptz default now(),
+  primary key (league, player_id)
+);
+
+create index if not exists draft_picks_league_idx on draft_picks (league);
+
 -- ---- News items (refreshed daily from RSS) -----------------
 create table if not exists news (
   id          text primary key,          -- hash of the article URL
@@ -123,3 +148,5 @@ alter table coaches     enable row level security;
 alter table rookies     enable row level security;
 alter table sleepers    enable row level security;
 alter table depth_chart enable row level security;
+alter table leagues     enable row level security;
+alter table draft_picks enable row level security;
