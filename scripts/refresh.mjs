@@ -331,11 +331,21 @@ async function refreshNews(players) {
     }
   }
 
-  if (items.length) {
-    const { error } = await supabase.from("news").upsert(items);
+  // Two feeds can carry the same article (same link -> same id). Postgres
+  // rejects updating the same conflict target twice in one upsert, so keep
+  // one row per id.
+  const seen = new Set();
+  const unique = items.filter((it) => {
+    if (seen.has(it.id)) return false;
+    seen.add(it.id);
+    return true;
+  });
+
+  if (unique.length) {
+    const { error } = await supabase.from("news").upsert(unique);
     if (error) throw error;
   }
-  console.log(`  upserted ${items.length} news items`);
+  console.log(`  upserted ${unique.length} news items`);
 }
 
 // ---- run ---------------------------------------------------
