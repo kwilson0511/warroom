@@ -49,6 +49,8 @@ create table if not exists draft_picks (
   league     text not null,
   player_id  text not null,
   status     text not null,          -- mine / kyle / taken
+  proj       numeric,                -- weekly ESPN projection (league scoring)
+  starter    boolean not null default false, -- in the optimal lineup this week
   updated_at timestamptz default now(),
   primary key (league, player_id)
 );

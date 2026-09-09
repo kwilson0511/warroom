@@ -373,7 +373,7 @@ async function fetchEspnLeague(espnId, season) {
   const s2 = process.env.ESPN_S2;
   const swid = process.env.ESPN_SWID;
   if (!s2 || !swid) return null;
-  const url = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${espnId}?view=mRoster`;
+  const url = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${espnId}?view=mRoster&view=mSettings`;
   const res = await fetch(url, {
     headers: { Cookie: `espn_s2=${s2}; SWID=${swid}` },
   });
@@ -392,12 +392,71 @@ function matchEspnPlayer(name, nameIndex) {
   return nameIndex.get(normName(name)) || null;
 }
 
+// Weekly projected fantasy points (in the league's scoring) from a roster entry.
+function weekProj(player, season, week) {
+  const s = (player?.stats || []).find(
+    (x) =>
+      x.seasonId === season &&
+      x.scoringPeriodId === week &&
+      x.statSourceId === 1 && // 1 = projection
+      x.statSplitTypeId === 1 // 1 = single week
+  );
+  return s && typeof s.appliedTotal === "number"
+    ? Math.round(s.appliedTotal * 10) / 10
+    : null;
+}
+
+// ESPN lineup-slot ids -> eligible positions.
+const SLOT_ELIG = {
+  0: ["QB"],
+  2: ["RB"],
+  4: ["WR"],
+  6: ["TE"],
+  17: ["K"],
+  16: ["DEF"],
+  23: ["RB", "WR", "TE"], // FLEX
+  7: ["QB", "RB", "WR", "TE"], // superflex / OP
+};
+
+// Highest-projected legal lineup -> Set of player ids to start.
+function optimalStarters(roster, slotCounts) {
+  const starters = new Set();
+  const used = new Set();
+  const pickFor = (elig, n) => {
+    for (let k = 0; k < n; k++) {
+      let best = null;
+      for (const p of roster) {
+        if (used.has(p.id) || !elig.includes(p.pos)) continue;
+        if (best === null || (p.proj ?? -1) > (best.proj ?? -1)) best = p;
+      }
+      if (best) {
+        used.add(best.id);
+        starters.add(best.id);
+      }
+    }
+  };
+  // dedicated slots first, then FLEX, then superflex
+  for (const slot of [0, 2, 4, 6, 17, 16, 23, 7]) {
+    const n = slotCounts[slot] || 0;
+    if (n > 0) pickFor(SLOT_ELIG[slot], n);
+  }
+  return starters;
+}
+
 async function syncEspnPicks(raw) {
   if (!process.env.ESPN_S2 || !process.env.ESPN_SWID) {
     console.log("ESPN sync skipped (no cookies set).");
     return;
   }
   console.log("Syncing ESPN rosters…");
+
+  let week = 1;
+  try {
+    const st = await fetch("https://api.sleeper.app/v1/state/nfl").then((r) => r.json());
+    week = st?.week || 1;
+  } catch {
+    /* keep default week */
+  }
 
   const nameIndex = new Map();
   for (const p of Object.values(raw)) {
@@ -413,22 +472,47 @@ async function syncEspnPicks(raw) {
       const data = await fetchEspnLeague(cfg.espnId, cfg.season);
       if (!data || !data.teams) continue;
       const now = new Date().toISOString();
+      const slotCounts = data.settings?.rosterSettings?.lineupSlotCounts || {};
       const rows = [];
       const unmatched = [];
+
       for (const t of data.teams) {
+        const tracked = t.id === cfg.myTeamId || t.id === cfg.kyleTeamId;
         const status =
-          t.id === cfg.myTeamId
-            ? "mine"
-            : t.id === cfg.kyleTeamId
-            ? "kyle"
-            : "taken";
+          t.id === cfg.myTeamId ? "mine" : t.id === cfg.kyleTeamId ? "kyle" : "taken";
+
+        // Build the team's matched roster with position + weekly projection.
+        const roster = [];
         for (const e of t.roster?.entries || []) {
-          const nm = e.playerPoolEntry?.player?.fullName;
+          const pl = e.playerPoolEntry?.player;
+          const nm = pl?.fullName;
           const pid = matchEspnPlayer(nm, nameIndex);
-          if (pid) rows.push({ league: cfg.league, player_id: pid, status, updated_at: now });
-          else if (nm) unmatched.push(nm);
+          if (!pid) {
+            if (nm) unmatched.push(nm);
+            continue;
+          }
+          const pos =
+            raw[pid]?.position || (/ D\/ST$/i.test(nm || "") ? "DEF" : null);
+          roster.push({
+            id: pid,
+            pos,
+            proj: tracked ? weekProj(pl, cfg.season, week) : null,
+          });
+        }
+
+        const starters = tracked ? optimalStarters(roster, slotCounts) : new Set();
+        for (const p of roster) {
+          rows.push({
+            league: cfg.league,
+            player_id: p.id,
+            status,
+            proj: p.proj,
+            starter: starters.has(p.id),
+            updated_at: now,
+          });
         }
       }
+
       // dedupe by player_id (a name collision could map two ESPN players to one id)
       const seen = new Set();
       const deduped = rows.filter((r) => {
@@ -436,7 +520,7 @@ async function syncEspnPicks(raw) {
         seen.add(r.player_id);
         return true;
       });
-      // Replace this league's picks with the ESPN truth.
+
       const del = await supabase.from("draft_picks").delete().eq("league", cfg.league);
       if (del.error) throw del.error;
       for (let i = 0; i < deduped.length; i += 100) {
@@ -447,10 +531,13 @@ async function syncEspnPicks(raw) {
       }
       const mineN = deduped.filter((r) => r.status === "mine").length;
       const kyleN = deduped.filter((r) => r.status === "kyle").length;
+      const startN = deduped.filter((r) => r.starter).length;
       console.log(
         `  ${cfg.league}: ${deduped.length} picks (mine ${mineN}, kyle ${kyleN}, taken ${
           deduped.length - mineN - kyleN
-        })${unmatched.length ? ` | unmatched: ${unmatched.join(", ")}` : ""}`
+        }, starters ${startN})${
+          unmatched.length ? ` | unmatched: ${unmatched.join(", ")}` : ""
+        }`
       );
     } catch (e) {
       console.warn(`  ESPN sync failed for ${cfg.league}: ${e.message} — picks left as-is`);

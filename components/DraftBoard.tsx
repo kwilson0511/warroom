@@ -92,6 +92,8 @@ interface RosterPlayer {
   team: string | null;
   bye: number | null;
   injury: string | null;
+  proj?: number | null;
+  starter?: boolean;
   handcuff?: string;
   handcuff_rostered?: boolean;
 }
@@ -994,6 +996,10 @@ export default function DraftBoard() {
                       const roster = rostersData.rosters[l.id];
                       const byPos: Record<string, RosterPlayer[]> = {};
                       roster.forEach((p) => (byPos[p.pos] ||= []).push(p));
+                      // best projection first within each position
+                      Object.values(byPos).forEach((list) =>
+                        list.sort((a, b) => (b.proj ?? -1) - (a.proj ?? -1))
+                      );
                       return (
                         <section key={l.id} className="mt-group">
                           <div className="tier-head">
@@ -1011,8 +1017,23 @@ export default function DraftBoard() {
                                   {byPos[pos].map((p) => {
                                     const g = p.team ? odds[p.team] : null;
                                     return (
-                                      <li key={p.id} className="mt-player">
-                                        <span className="mt-name">{p.name}</span>
+                                      <li
+                                        key={p.id}
+                                        className={`mt-player ${
+                                          p.starter ? "mt-player--start" : ""
+                                        }`}
+                                      >
+                                        <span className="mt-name">
+                                          {p.starter && (
+                                            <em className="mt-start">START</em>
+                                          )}
+                                          {p.name}
+                                          {p.proj != null && (
+                                            <em className="mt-proj">
+                                              {p.proj} pts
+                                            </em>
+                                          )}
+                                        </span>
                                         <span className="mt-meta">
                                           {p.team}
                                           {p.bye ? ` · bye ${p.bye}` : ""}
@@ -1250,7 +1271,10 @@ const css = `
 .mt-pos-label{font-family:"Georgia",serif;font-weight:800;font-size:13px;color:var(--accent);}
 .mt-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;}
 .mt-player{display:flex;flex-direction:column;gap:1px;font-size:14px;}
-.mt-name{font-weight:700;}
+.mt-name{font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.mt-player--start{border-left:2px solid var(--accent);padding-left:8px;margin-left:-10px;}
+.mt-start{font-style:normal;font-size:9px;font-weight:800;letter-spacing:.06em;background:var(--accent);color:var(--paper);padding:1px 5px;border-radius:2px;}
+.mt-proj{font-style:normal;font-size:11px;color:var(--muted);font-weight:600;}
 .mt-meta{font-size:12px;color:var(--muted);}
 .mt-hc{font-size:11px;color:#3a6ea5;font-weight:600;}
 .mt-game{font-size:11px;color:var(--muted);}

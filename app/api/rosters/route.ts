@@ -41,7 +41,10 @@ export async function GET(request: Request) {
     { data: rookies, error: rErr },
     { data: leagues, error: lErr },
   ] = await Promise.all([
-    supabase.from("draft_picks").select("league, player_id").eq("status", owner),
+    supabase
+      .from("draft_picks")
+      .select("league, player_id, proj, starter")
+      .eq("status", owner),
     supabase.from("players").select("id, name, pos, team, injury"),
     supabase.from("depth_chart").select("id, name, pos, team, depth_order"),
     supabase.from("rookies").select("id, name, pos, team"),
@@ -81,16 +84,24 @@ export async function GET(request: Request) {
     list.sort((a, b) => (a.depth_order ?? 99) - (b.depth_order ?? 99))
   );
 
-  const idsByLeague: Record<string, string[]> = {};
+  const picksByLeague: Record<
+    string,
+    { player_id: string; proj: number | null; starter: boolean }[]
+  > = {};
   const mineSetByLeague: Record<string, Set<string>> = {};
   (picks || []).forEach((pk) => {
-    (idsByLeague[pk.league] ||= []).push(pk.player_id);
+    (picksByLeague[pk.league] ||= []).push({
+      player_id: pk.player_id,
+      proj: pk.proj ?? null,
+      starter: !!pk.starter,
+    });
     (mineSetByLeague[pk.league] ||= new Set()).add(pk.player_id);
   });
 
   const rosters: Record<string, unknown[]> = {};
-  for (const [lg, ids] of Object.entries(idsByLeague)) {
-    rosters[lg] = ids.map((id) => {
+  for (const [lg, plist] of Object.entries(picksByLeague)) {
+    rosters[lg] = plist.map((pk) => {
+      const id = pk.player_id;
       const r = ref[id];
       const team = r?.team ?? null;
       const entry: Record<string, unknown> = {
@@ -100,6 +111,8 @@ export async function GET(request: Request) {
         team,
         bye: team ? BYE_WEEKS[team] ?? null : null,
         injury: injuryById[id] || null,
+        proj: pk.proj,
+        starter: pk.starter,
       };
       if (r?.pos === "RB" && team) {
         const list = rbByTeam[team] || [];
