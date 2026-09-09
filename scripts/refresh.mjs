@@ -365,6 +365,8 @@ async function refreshNews(players) {
 // Non-fatal: if cookies are missing or expired, it skips and leaves picks as-is.
 const ESPN_LEAGUES = [
   { league: "l1", espnId: 1702073206, season: 2026, myTeamId: 6, kyleTeamId: 12 },
+  { league: "l2", espnId: 1790021923, season: 2026, myTeamId: 8 }, // Girls League
+  { league: "l4", espnId: 703804285, season: 2026, myTeamId: 11 }, // GBW
 ];
 
 async function fetchEspnLeague(espnId, season) {
