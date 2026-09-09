@@ -1,9 +1,9 @@
 import { getServerClient } from "../../../lib/supabase";
 
-// GET /api/rosters -> your "mine" picks across every league, enriched for the
-// My Teams view:
+// GET /api/rosters?owner=mine|kyle -> that owner's picks across every league,
+// enriched for the My Teams / Kyle's Teams view:
 //   - rosters:  { leagueId: [ {player + bye + injury + (RB) handcuff} ] }
-//   - exposure: players you roster on 2+ of your teams
+//   - exposure: players rostered on 2+ of that owner's teams
 //   - week:     current NFL week (to flag byes happening now)
 
 interface RbDepth {
@@ -13,8 +13,10 @@ interface RbDepth {
   depth_order: number | null;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const supabase = getServerClient();
+  const { searchParams } = new URL(request.url);
+  const owner = searchParams.get("owner") === "kyle" ? "kyle" : "mine";
 
   const [
     { data: picks, error: pkErr },
@@ -22,7 +24,7 @@ export async function GET() {
     { data: rbDepth, error: dErr },
     { data: leagues, error: lErr },
   ] = await Promise.all([
-    supabase.from("draft_picks").select("league, player_id").eq("status", "mine"),
+    supabase.from("draft_picks").select("league, player_id").eq("status", owner),
     supabase.from("players").select("id, name, pos, team, bye, injury"),
     supabase
       .from("depth_chart")

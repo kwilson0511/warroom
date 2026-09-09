@@ -121,7 +121,7 @@ type Drawer =
   | { kind: "sleepers" }
   | { kind: "injuries" }
   | { kind: "news" }
-  | { kind: "myteams" };
+  | { kind: "rosters"; owner: "mine" | "kyle" };
 
 // Heuristic: does this article look like breaking injury/transaction news?
 const PRIORITY_RE =
@@ -283,10 +283,10 @@ export default function DraftBoard() {
       .catch(() => setCoaches({}));
   }, []);
 
-  // Your rosters across all leagues — loaded when the My Teams drawer opens.
+  // Rosters across all leagues (yours or Kyle's) — loaded when that drawer opens.
   useEffect(() => {
-    if (!drawer || drawer.kind !== "myteams") return;
-    fetch("/api/rosters", { cache: "no-store" })
+    if (!drawer || drawer.kind !== "rosters") return;
+    fetch(`/api/rosters?owner=${drawer.owner}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => setRostersData(d.error ? null : d))
       .catch(() => setRostersData(null));
@@ -610,10 +610,17 @@ export default function DraftBoard() {
           />
           <button
             className="teams-btn teams-btn--primary"
-            onClick={() => setDrawer({ kind: "myteams" })}
+            onClick={() => setDrawer({ kind: "rosters", owner: "mine" })}
             title="Your rosters across all leagues"
           >
             My Teams
+          </button>
+          <button
+            className="teams-btn teams-btn--kyle"
+            onClick={() => setDrawer({ kind: "rosters", owner: "kyle" })}
+            title="Kyle's rosters across all leagues"
+          >
+            Kyle&apos;s Teams
           </button>
           <button
             className="teams-btn"
@@ -773,8 +780,10 @@ export default function DraftBoard() {
                   ? "Injury Report"
                   : drawer.kind === "news"
                   ? "Latest News"
-                  : drawer.kind === "myteams"
-                  ? "My Teams"
+                  : drawer.kind === "rosters"
+                  ? drawer.owner === "mine"
+                    ? "My Teams"
+                    : "Kyle's Teams"
                   : `${drawer.kind === "team" ? drawer.team : drawer.name} — latest`}
               </h2>
               <button className="drawer-close" onClick={() => setDrawer(null)}>
@@ -941,9 +950,9 @@ export default function DraftBoard() {
                   ))}
                 </div>
               )
-            ) : drawer.kind === "myteams" ? (
+            ) : drawer.kind === "rosters" ? (
               !rostersData ? (
-                <p className="empty">Loading your teams…</p>
+                <p className="empty">Loading rosters…</p>
               ) : (
                 <div className="myteams">
                   {rostersData.exposure.length > 0 && (
@@ -1018,8 +1027,10 @@ export default function DraftBoard() {
                     (l) => (rostersData.rosters[l.id] || []).length === 0
                   ) && (
                     <p className="empty">
-                      No rostered players yet — mark players &quot;M&quot; (mine) on
-                      the board during your drafts and they&apos;ll show here.
+                      No rostered players yet — mark players &quot;
+                      {drawer.owner === "mine" ? "M" : "K"}&quot; (
+                      {drawer.owner === "mine" ? "mine" : "Kyle"}) on the board
+                      during drafts and they&apos;ll show here.
                     </p>
                   )}
                 </div>
@@ -1200,6 +1211,7 @@ const css = `
 .teams-btn{border:1px solid var(--ink);background:var(--ink);color:var(--paper);padding:6px 14px;border-radius:2px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;transition:opacity .12s;}
 .teams-btn:hover{opacity:.85;}
 .teams-btn--primary{background:var(--accent);border-color:var(--accent);}
+.teams-btn--kyle{background:#3a6ea5;border-color:#3a6ea5;}
 .myteams{display:flex;flex-direction:column;gap:18px;}
 .mt-group .tier-head{margin-bottom:8px;}
 .mt-pos{display:grid;grid-template-columns:34px 1fr;gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--paper-line);}
