@@ -169,6 +169,7 @@ function normName(s) {
     .replace(/\p{Diacritic}/gu, "") // strip accents (e.g. Piñeiro -> Pineiro)
     .toLowerCase()
     .replace(/[^a-z ]/g, " ")
+    .replace(/\b(iii|ii|iv|jr|sr|v)\b/g, " ") // strip Jr/Sr/II/III/IV/V suffixes
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -358,6 +359,103 @@ async function refreshNews(players) {
   console.log(`  upserted ${unique.length} news items`);
 }
 
+// ---- ESPN league sync (optional) ---------------------------
+// Mirrors real ESPN rosters into draft_picks so My Teams / Kyle's Teams match
+// your actual leagues. Needs ESPN_S2 + ESPN_SWID env vars (login cookies).
+// Non-fatal: if cookies are missing or expired, it skips and leaves picks as-is.
+const ESPN_LEAGUES = [
+  { league: "l1", espnId: 1702073206, season: 2026, myTeamId: 6, kyleTeamId: 12 },
+];
+
+async function fetchEspnLeague(espnId, season) {
+  const s2 = process.env.ESPN_S2;
+  const swid = process.env.ESPN_SWID;
+  if (!s2 || !swid) return null;
+  const url = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${espnId}?view=mRoster`;
+  const res = await fetch(url, {
+    headers: { Cookie: `espn_s2=${s2}; SWID=${swid}` },
+  });
+  if (!res.ok) {
+    console.warn(`  ESPN ${espnId}: HTTP ${res.status} (cookies expired?) — skipped`);
+    return null;
+  }
+  return res.json();
+}
+
+// ESPN player name -> our Sleeper player_id. D/ST maps by team nickname.
+function matchEspnPlayer(name, nameIndex) {
+  if (!name) return null;
+  const dst = name.match(/^(.*) D\/ST$/i);
+  if (dst) return TEAM_NAMES[dst[1].trim()] || null; // DEF id = team abbr
+  return nameIndex.get(normName(name)) || null;
+}
+
+async function syncEspnPicks(raw) {
+  if (!process.env.ESPN_S2 || !process.env.ESPN_SWID) {
+    console.log("ESPN sync skipped (no cookies set).");
+    return;
+  }
+  console.log("Syncing ESPN rosters…");
+
+  const nameIndex = new Map();
+  for (const p of Object.values(raw)) {
+    if (!p.active) continue;
+    const full = playerName(p);
+    if (!full) continue;
+    const k = normName(full);
+    if (!nameIndex.has(k)) nameIndex.set(k, p.player_id);
+  }
+
+  for (const cfg of ESPN_LEAGUES) {
+    try {
+      const data = await fetchEspnLeague(cfg.espnId, cfg.season);
+      if (!data || !data.teams) continue;
+      const now = new Date().toISOString();
+      const rows = [];
+      const unmatched = [];
+      for (const t of data.teams) {
+        const status =
+          t.id === cfg.myTeamId
+            ? "mine"
+            : t.id === cfg.kyleTeamId
+            ? "kyle"
+            : "taken";
+        for (const e of t.roster?.entries || []) {
+          const nm = e.playerPoolEntry?.player?.fullName;
+          const pid = matchEspnPlayer(nm, nameIndex);
+          if (pid) rows.push({ league: cfg.league, player_id: pid, status, updated_at: now });
+          else if (nm) unmatched.push(nm);
+        }
+      }
+      // dedupe by player_id (a name collision could map two ESPN players to one id)
+      const seen = new Set();
+      const deduped = rows.filter((r) => {
+        if (seen.has(r.player_id)) return false;
+        seen.add(r.player_id);
+        return true;
+      });
+      // Replace this league's picks with the ESPN truth.
+      const del = await supabase.from("draft_picks").delete().eq("league", cfg.league);
+      if (del.error) throw del.error;
+      for (let i = 0; i < deduped.length; i += 100) {
+        const { error } = await supabase
+          .from("draft_picks")
+          .insert(deduped.slice(i, i + 100));
+        if (error) throw error;
+      }
+      const mineN = deduped.filter((r) => r.status === "mine").length;
+      const kyleN = deduped.filter((r) => r.status === "kyle").length;
+      console.log(
+        `  ${cfg.league}: ${deduped.length} picks (mine ${mineN}, kyle ${kyleN}, taken ${
+          deduped.length - mineN - kyleN
+        })${unmatched.length ? ` | unmatched: ${unmatched.join(", ")}` : ""}`
+      );
+    } catch (e) {
+      console.warn(`  ESPN sync failed for ${cfg.league}: ${e.message} — picks left as-is`);
+    }
+  }
+}
+
 // ---- run ---------------------------------------------------
 async function main() {
   const raw = await fetchSleeperPlayers();
@@ -365,6 +463,7 @@ async function main() {
   await refreshRookies(raw);
   await refreshDepthChart(raw);
   await refreshNews(players);
+  await syncEspnPicks(raw);
   console.log("Refresh complete.");
 }
 
