@@ -175,6 +175,16 @@ function normName(s) {
 
 const K_RANK_MAP = new Map(K_RANK.map((n, i) => [normName(n), i]));
 
+// 2026 NFL bye weeks by team. Sleeper doesn't provide byes in the player feed,
+// so this is a curated snapshot (source: FantasyFootballCalculator, verified
+// 2026-09-09). Fixed for the season — no need to re-pull.
+const BYE_WEEKS = {
+  KC: 5, CAR: 5, MIA: 6, CIN: 6, DET: 6, MIN: 6, BUF: 7, LAC: 7, WAS: 7,
+  JAX: 7, NYG: 8, NO: 8, SF: 8, HOU: 8, TEN: 9, PIT: 9, DEN: 10, PHI: 10,
+  CHI: 10, TB: 10, NE: 11, CLE: 11, SEA: 11, GB: 11, ATL: 11, LAR: 11,
+  IND: 13, NYJ: 13, LV: 13, BAL: 13, DAL: 14, ARI: 14,
+};
+
 // ---- 1. Draft board ----------------------------------------
 // Skill positions (QB/RB/WR/TE) are ranked by Sleeper search_rank, so we take
 // the top ~300. Sleeper does NOT meaningfully rank K or DEF (defenses have no
@@ -191,7 +201,7 @@ async function refreshPlayers(raw) {
     pos: p.position,
     team: p.team,
     adp: p.search_rank ?? 999,
-    bye: p.bye_week ?? null,
+    bye: BYE_WEEKS[p.team] ?? null,
     injury: formatInjury(p),
     rookie: p.years_exp === 0,
     college: p.college || null,

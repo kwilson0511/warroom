@@ -85,6 +85,32 @@ interface DepthEntry {
   depth_order: number | null;
 }
 
+interface RosterPlayer {
+  id: string;
+  name: string;
+  pos: string;
+  team: string | null;
+  bye: number | null;
+  injury: string | null;
+  handcuff?: string;
+  handcuff_rostered?: boolean;
+}
+
+interface ExposureEntry {
+  id: string;
+  name: string;
+  pos: string;
+  team: string | null;
+  leagues: string[];
+}
+
+interface RostersData {
+  leagues: League[];
+  rosters: Record<string, RosterPlayer[]>;
+  exposure: ExposureEntry[];
+  week: number | null;
+}
+
 // What the news drawer is currently showing: the team overview (a list of
 // all teams), a single team's news, or one player's news.
 type Drawer =
@@ -94,7 +120,8 @@ type Drawer =
   | { kind: "rookies" }
   | { kind: "sleepers" }
   | { kind: "injuries" }
-  | { kind: "news" };
+  | { kind: "news" }
+  | { kind: "myteams" };
 
 // Heuristic: does this article look like breaking injury/transaction news?
 const PRIORITY_RE =
@@ -177,6 +204,7 @@ export default function DraftBoard() {
   const [depth, setDepth] = useState<DepthEntry[]>([]);
   const [rookies, setRookies] = useState<Rookie[]>([]);
   const [sleepers, setSleepers] = useState<Sleeper[]>([]);
+  const [rostersData, setRostersData] = useState<RostersData | null>(null);
 
   const loadBoard = useCallback(async () => {
     try {
@@ -254,6 +282,15 @@ export default function DraftBoard() {
       })
       .catch(() => setCoaches({}));
   }, []);
+
+  // Your rosters across all leagues — loaded when the My Teams drawer opens.
+  useEffect(() => {
+    if (!drawer || drawer.kind !== "myteams") return;
+    fetch("/api/rosters", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setRostersData(d.error ? null : d))
+      .catch(() => setRostersData(null));
+  }, [drawer]);
 
   // A team's depth chart — loaded when a team drawer opens.
   useEffect(() => {
@@ -572,6 +609,13 @@ export default function DraftBoard() {
             onChange={(e) => setQuery(e.target.value)}
           />
           <button
+            className="teams-btn teams-btn--primary"
+            onClick={() => setDrawer({ kind: "myteams" })}
+            title="Your rosters across all leagues"
+          >
+            My Teams
+          </button>
+          <button
             className="teams-btn"
             onClick={() => setDrawer({ kind: "teams" })}
             title="Browse news by team"
@@ -729,6 +773,8 @@ export default function DraftBoard() {
                   ? "Injury Report"
                   : drawer.kind === "news"
                   ? "Latest News"
+                  : drawer.kind === "myteams"
+                  ? "My Teams"
                   : `${drawer.kind === "team" ? drawer.team : drawer.name} — latest`}
               </h2>
               <button className="drawer-close" onClick={() => setDrawer(null)}>
@@ -893,6 +939,89 @@ export default function DraftBoard() {
                       <ul className="news-list">{items.map(newsItem)}</ul>
                     </section>
                   ))}
+                </div>
+              )
+            ) : drawer.kind === "myteams" ? (
+              !rostersData ? (
+                <p className="empty">Loading your teams…</p>
+              ) : (
+                <div className="myteams">
+                  {rostersData.exposure.length > 0 && (
+                    <section className="mt-group">
+                      <div className="tier-head">
+                        <span className="tier-num">Across your leagues</span>
+                        <span className="tier-rule" />
+                      </div>
+                      <ul className="mt-list">
+                        {rostersData.exposure.map((e) => (
+                          <li key={e.id} className="mt-player">
+                            <span className="mt-name">{e.name}</span>
+                            <span className="mt-meta">
+                              {e.pos}
+                              {e.team ? ` · ${e.team}` : ""} — on {e.leagues.length}{" "}
+                              teams: {e.leagues.join(", ")}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )}
+                  {rostersData.leagues
+                    .filter((l) => (rostersData.rosters[l.id] || []).length)
+                    .map((l) => {
+                      const roster = rostersData.rosters[l.id];
+                      const byPos: Record<string, RosterPlayer[]> = {};
+                      roster.forEach((p) => (byPos[p.pos] ||= []).push(p));
+                      return (
+                        <section key={l.id} className="mt-group">
+                          <div className="tier-head">
+                            <span className="tier-num">{l.name}</span>
+                            <span className="tier-label">
+                              {roster.length} players
+                            </span>
+                            <span className="tier-rule" />
+                          </div>
+                          {["QB", "RB", "WR", "TE", "K", "DEF"].map((pos) =>
+                            byPos[pos]?.length ? (
+                              <div key={pos} className="mt-pos">
+                                <span className="mt-pos-label">{pos}</span>
+                                <ul className="mt-list">
+                                  {byPos[pos].map((p) => (
+                                    <li key={p.id} className="mt-player">
+                                      <span className="mt-name">{p.name}</span>
+                                      <span className="mt-meta">
+                                        {p.team}
+                                        {p.bye ? ` · bye ${p.bye}` : ""}
+                                        {rostersData.week && p.bye === rostersData.week
+                                          ? " · BYE THIS WEEK"
+                                          : ""}
+                                        {p.injury ? ` · ${p.injury}` : ""}
+                                      </span>
+                                      {p.pos === "RB" && p.handcuff && (
+                                        <span className="mt-hc">
+                                          handcuff: {p.handcuff}
+                                          {p.handcuff_rostered
+                                            ? " ✓ yours"
+                                            : " — open"}
+                                        </span>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ) : null
+                          )}
+                        </section>
+                      );
+                    })}
+                  {rostersData.leagues.every(
+                    (l) => (rostersData.rosters[l.id] || []).length === 0
+                  ) && (
+                    <p className="empty">
+                      No rostered players yet — mark players &quot;M&quot; (mine) on
+                      the board during your drafts and they&apos;ll show here.
+                    </p>
+                  )}
                 </div>
               )
             ) : drawer.kind === "teams" ? (
@@ -1070,6 +1199,16 @@ const css = `
 .controls-right{display:flex;align-items:center;gap:10px;}
 .teams-btn{border:1px solid var(--ink);background:var(--ink);color:var(--paper);padding:6px 14px;border-radius:2px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;transition:opacity .12s;}
 .teams-btn:hover{opacity:.85;}
+.teams-btn--primary{background:var(--accent);border-color:var(--accent);}
+.myteams{display:flex;flex-direction:column;gap:18px;}
+.mt-group .tier-head{margin-bottom:8px;}
+.mt-pos{display:grid;grid-template-columns:34px 1fr;gap:10px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--paper-line);}
+.mt-pos-label{font-family:"Georgia",serif;font-weight:800;font-size:13px;color:var(--accent);}
+.mt-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;}
+.mt-player{display:flex;flex-direction:column;gap:1px;font-size:14px;}
+.mt-name{font-weight:700;}
+.mt-meta{font-size:12px;color:var(--muted);}
+.mt-hc{font-size:11px;color:#3a6ea5;font-weight:600;}
 .tier{margin-bottom:26px;}
 .tier-head{display:flex;align-items:baseline;gap:12px;margin-bottom:8px;}
 .tier-num{font-family:"Georgia",serif;font-weight:800;font-size:15px;color:var(--accent);}
