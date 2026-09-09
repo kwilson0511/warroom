@@ -111,6 +111,14 @@ interface RostersData {
   week: number | null;
 }
 
+interface GameOdds {
+  opp: string;
+  home: boolean;
+  total: number | null;
+  spread: number;
+  implied: number | null;
+}
+
 // What the news drawer is currently showing: the team overview (a list of
 // all teams), a single team's news, or one player's news.
 type Drawer =
@@ -205,6 +213,7 @@ export default function DraftBoard() {
   const [rookies, setRookies] = useState<Rookie[]>([]);
   const [sleepers, setSleepers] = useState<Sleeper[]>([]);
   const [rostersData, setRostersData] = useState<RostersData | null>(null);
+  const [odds, setOdds] = useState<Record<string, GameOdds>>({});
 
   const loadBoard = useCallback(async () => {
     try {
@@ -283,13 +292,17 @@ export default function DraftBoard() {
       .catch(() => setCoaches({}));
   }, []);
 
-  // Rosters across all leagues (yours or Kyle's) — loaded when that drawer opens.
+  // Rosters + Vegas odds — loaded when a My Teams / Kyle's Teams drawer opens.
   useEffect(() => {
     if (!drawer || drawer.kind !== "rosters") return;
     fetch(`/api/rosters?owner=${drawer.owner}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => setRostersData(d.error ? null : d))
       .catch(() => setRostersData(null));
+    fetch("/api/odds", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setOdds(d.teams || {}))
+      .catch(() => setOdds({}));
   }, [drawer]);
 
   // A team's depth chart — loaded when a team drawer opens.
@@ -995,27 +1008,46 @@ export default function DraftBoard() {
                               <div key={pos} className="mt-pos">
                                 <span className="mt-pos-label">{pos}</span>
                                 <ul className="mt-list">
-                                  {byPos[pos].map((p) => (
-                                    <li key={p.id} className="mt-player">
-                                      <span className="mt-name">{p.name}</span>
-                                      <span className="mt-meta">
-                                        {p.team}
-                                        {p.bye ? ` · bye ${p.bye}` : ""}
-                                        {rostersData.week && p.bye === rostersData.week
-                                          ? " · BYE THIS WEEK"
-                                          : ""}
-                                        {p.injury ? ` · ${p.injury}` : ""}
-                                      </span>
-                                      {p.pos === "RB" && p.handcuff && (
-                                        <span className="mt-hc">
-                                          handcuff: {p.handcuff}
-                                          {p.handcuff_rostered
-                                            ? " ✓ yours"
-                                            : " — open"}
+                                  {byPos[pos].map((p) => {
+                                    const g = p.team ? odds[p.team] : null;
+                                    return (
+                                      <li key={p.id} className="mt-player">
+                                        <span className="mt-name">{p.name}</span>
+                                        <span className="mt-meta">
+                                          {p.team}
+                                          {p.bye ? ` · bye ${p.bye}` : ""}
+                                          {rostersData.week &&
+                                          p.bye === rostersData.week
+                                            ? " · BYE THIS WEEK"
+                                            : ""}
+                                          {p.injury ? ` · ${p.injury}` : ""}
                                         </span>
-                                      )}
-                                    </li>
-                                  ))}
+                                        {g && g.implied != null && (
+                                          <span
+                                            className={`mt-game ${
+                                              g.implied >= 25
+                                                ? "mt-game--hi"
+                                                : g.implied <= 18
+                                                ? "mt-game--lo"
+                                                : ""
+                                            }`}
+                                          >
+                                            {g.home ? "vs " : "@ "}
+                                            {g.opp} · implied {g.implied}
+                                            {g.total != null ? ` · O/U ${g.total}` : ""}
+                                          </span>
+                                        )}
+                                        {p.pos === "RB" && p.handcuff && (
+                                          <span className="mt-hc">
+                                            handcuff: {p.handcuff}
+                                            {p.handcuff_rostered
+                                              ? " ✓ yours"
+                                              : " — open"}
+                                          </span>
+                                        )}
+                                      </li>
+                                    );
+                                  })}
                                 </ul>
                               </div>
                             ) : null
@@ -1221,6 +1253,9 @@ const css = `
 .mt-name{font-weight:700;}
 .mt-meta{font-size:12px;color:var(--muted);}
 .mt-hc{font-size:11px;color:#3a6ea5;font-weight:600;}
+.mt-game{font-size:11px;color:var(--muted);}
+.mt-game--hi{color:var(--accent);font-weight:700;}
+.mt-game--lo{color:var(--amber);}
 .tier{margin-bottom:26px;}
 .tier-head{display:flex;align-items:baseline;gap:12px;margin-bottom:8px;}
 .tier-num{font-family:"Georgia",serif;font-weight:800;font-size:15px;color:var(--accent);}
