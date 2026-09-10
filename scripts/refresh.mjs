@@ -131,20 +131,21 @@ async function upsertBatched(table, rows) {
   }
 }
 
-// Safely replace a league's draft_picks: upsert the new rows FIRST, then remove
-// only rows no longer present. Never deletes-then-fails into an empty league.
-// A no-op on empty input, so a failed roster fetch can't wipe a league.
-async function replaceLeaguePicks(league, rows) {
+// Safely replace a league's rows in a (league, player_id)-keyed table: upsert
+// the new rows FIRST, then remove only rows no longer present. Never
+// deletes-then-fails into an empty league. A no-op on empty input, so a failed
+// fetch can't wipe a league.
+async function replaceLeagueRows(table, league, rows) {
   if (!rows.length) return;
   for (let i = 0; i < rows.length; i += 100) {
     const { error } = await supabase
-      .from("draft_picks")
+      .from(table)
       .upsert(rows.slice(i, i + 100), { onConflict: "league,player_id" });
     if (error) throw error;
   }
   const keep = rows.map((r) => r.player_id).join(",");
   const { error } = await supabase
-    .from("draft_picks")
+    .from(table)
     .delete()
     .eq("league", league)
     .not("player_id", "in", `(${keep})`);
@@ -404,6 +405,30 @@ async function fetchEspnLeague(espnId, season) {
   return res.json();
 }
 
+// Top available free agents (by % rostered) with weekly projections.
+async function fetchEspnFreeAgents(espnId, season, week) {
+  const s2 = process.env.ESPN_S2;
+  const swid = process.env.ESPN_SWID;
+  if (!s2 || !swid) return null;
+  const filter = {
+    players: {
+      filterStatus: { value: ["FREEAGENT", "WAIVERS"] },
+      limit: 80,
+      sortPercOwned: { sortPriority: 1, sortAsc: false },
+      filterStatsForCurrentSeasonScoringPeriodId: { value: [week] },
+    },
+  };
+  const url = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${espnId}?view=kona_player_info`;
+  const res = await fetch(url, {
+    headers: {
+      Cookie: `espn_s2=${s2}; SWID=${swid}`,
+      "X-Fantasy-Filter": JSON.stringify(filter),
+    },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 // ESPN player name -> our Sleeper player_id. D/ST maps by team nickname.
 function matchEspnPlayer(name, nameIndex) {
   if (!name) return null;
@@ -541,7 +566,7 @@ async function syncEspnPicks(raw) {
         return true;
       });
 
-      await replaceLeaguePicks(cfg.league, deduped);
+      await replaceLeagueRows("draft_picks", cfg.league, deduped);
       const mineN = deduped.filter((r) => r.status === "mine").length;
       const kyleN = deduped.filter((r) => r.status === "kyle").length;
       const startN = deduped.filter((r) => r.starter).length;
@@ -552,6 +577,35 @@ async function syncEspnPicks(raw) {
           unmatched.length ? ` | unmatched: ${unmatched.join(", ")}` : ""
         }`
       );
+
+      // Waiver pool: top available free agents by projection.
+      try {
+        const fa = await fetchEspnFreeAgents(cfg.espnId, cfg.season, week);
+        if (fa && Array.isArray(fa.players)) {
+          const wseen = new Set();
+          const wrows = [];
+          for (const entry of fa.players) {
+            const pl = entry.player;
+            const pid = matchEspnPlayer(pl?.fullName, nameIndex);
+            if (!pid || wseen.has(pid)) continue;
+            wseen.add(pid);
+            wrows.push({
+              league: cfg.league,
+              player_id: pid,
+              proj: weekProj(pl, cfg.season, week),
+              pct_owned:
+                pl?.ownership?.percentOwned != null
+                  ? Math.round(pl.ownership.percentOwned)
+                  : null,
+              updated_at: now,
+            });
+          }
+          await replaceLeagueRows("waivers", cfg.league, wrows);
+          console.log(`  ${cfg.league} waivers: ${wrows.length} free agents`);
+        }
+      } catch (e) {
+        console.warn(`  waiver fetch failed for ${cfg.league}: ${e.message}`);
+      }
     } catch (e) {
       console.warn(`  ESPN sync failed for ${cfg.league}: ${e.message} — picks left as-is`);
     }
@@ -601,7 +655,7 @@ async function syncSleeperPicks() {
         seen.add(r.player_id);
         return true;
       });
-      await replaceLeaguePicks(cfg.league, deduped);
+      await replaceLeagueRows("draft_picks", cfg.league, deduped);
       const kyleN = deduped.filter((r) => r.status === "kyle").length;
       console.log(
         `  ${cfg.league} (Sleeper): ${deduped.length} picks (kyle ${kyleN}, taken ${

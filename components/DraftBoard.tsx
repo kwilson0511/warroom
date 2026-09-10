@@ -121,6 +121,18 @@ interface GameOdds {
   implied: number | null;
 }
 
+interface WaiverPlayer {
+  id: string;
+  name: string;
+  pos: string;
+  team: string | null;
+  bye: number | null;
+  injury: string | null;
+  proj: number | null;
+  pct_owned: number | null;
+  upgrade: boolean;
+}
+
 // What the news drawer is currently showing: the team overview (a list of
 // all teams), a single team's news, or one player's news.
 type Drawer =
@@ -131,7 +143,8 @@ type Drawer =
   | { kind: "sleepers" }
   | { kind: "injuries" }
   | { kind: "news" }
-  | { kind: "rosters"; owner: "mine" | "kyle" };
+  | { kind: "rosters"; owner: "mine" | "kyle" }
+  | { kind: "waivers" };
 
 // Heuristic: does this article look like breaking injury/transaction news?
 const PRIORITY_RE =
@@ -216,6 +229,7 @@ export default function DraftBoard() {
   const [sleepers, setSleepers] = useState<Sleeper[]>([]);
   const [rostersData, setRostersData] = useState<RostersData | null>(null);
   const [odds, setOdds] = useState<Record<string, GameOdds>>({});
+  const [waivers, setWaivers] = useState<WaiverPlayer[]>([]);
 
   const loadBoard = useCallback(async () => {
     try {
@@ -306,6 +320,21 @@ export default function DraftBoard() {
       .then((d) => setOdds(d.teams || {}))
       .catch(() => setOdds({}));
   }, [drawer]);
+
+  // Waiver pool for the currently selected league — loaded when opened.
+  useEffect(() => {
+    if (!drawer || drawer.kind !== "waivers") return;
+    fetch(`/api/waivers?league=${encodeURIComponent(league)}`, {
+      cache: "no-store",
+    })
+      .then((r) => r.json())
+      .then((d) => setWaivers(d.list || []))
+      .catch(() => setWaivers([]));
+    fetch("/api/odds", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setOdds(d.teams || {}))
+      .catch(() => setOdds({}));
+  }, [drawer, league]);
 
   // A team's depth chart — loaded when a team drawer opens.
   useEffect(() => {
@@ -506,6 +535,13 @@ export default function DraftBoard() {
     return m;
   }, [depth]);
 
+  // Waiver pool grouped by position (already proj-ranked from the API).
+  const waiversByPos = useMemo(() => {
+    const m: Record<string, WaiverPlayer[]> = {};
+    waivers.forEach((w) => (m[w.pos] ||= []).push(w));
+    return m;
+  }, [waivers]);
+
   // Unique teams present on the board (drop free agents), alphabetized.
   const teamList = useMemo(() => {
     const set = new Set<string>();
@@ -636,6 +672,13 @@ export default function DraftBoard() {
             title="Kyle's rosters across all leagues"
           >
             Kyle&apos;s Teams
+          </button>
+          <button
+            className="teams-btn teams-btn--primary"
+            onClick={() => setDrawer({ kind: "waivers" })}
+            title="Top available players in the selected league"
+          >
+            Waivers
           </button>
           <button
             className="teams-btn"
@@ -799,6 +842,10 @@ export default function DraftBoard() {
                   ? drawer.owner === "mine"
                     ? "My Teams"
                     : "Kyle's Teams"
+                  : drawer.kind === "waivers"
+                  ? `Waivers — ${
+                      leagues.find((l) => l.id === league)?.name || ""
+                    }`
                   : `${drawer.kind === "team" ? drawer.team : drawer.name} — latest`}
               </h2>
               <button className="drawer-close" onClick={() => setDrawer(null)}>
@@ -1085,6 +1132,64 @@ export default function DraftBoard() {
                       {drawer.owner === "mine" ? "mine" : "Kyle"}) on the board
                       during drafts and they&apos;ll show here.
                     </p>
+                  )}
+                </div>
+              )
+            ) : drawer.kind === "waivers" ? (
+              waivers.length === 0 ? (
+                <p className="empty">
+                  No waiver data for this league yet. This pulls from ESPN, so
+                  it covers your ESPN leagues after a refresh runs.
+                </p>
+              ) : (
+                <div className="myteams">
+                  <p className="drawer-note">
+                    Top available players, best projection first. ↑ = out-projects
+                    your weakest starter at that position.
+                  </p>
+                  {["QB", "RB", "WR", "TE", "K", "DEF"].map((pos) =>
+                    waiversByPos[pos]?.length ? (
+                      <section key={pos} className="mt-group">
+                        <div className="tier-head">
+                          <span className="tier-num">{pos}</span>
+                          <span className="tier-rule" />
+                        </div>
+                        <ul className="mt-list">
+                          {waiversByPos[pos].map((w) => {
+                            const g = w.team ? odds[w.team] : null;
+                            return (
+                              <li
+                                key={w.id}
+                                className={`mt-player ${
+                                  w.upgrade ? "mt-player--start" : ""
+                                }`}
+                              >
+                                <span className="mt-name">
+                                  {w.upgrade && (
+                                    <em className="mt-start">↑ UPGRADE</em>
+                                  )}
+                                  {w.name}
+                                  {w.proj != null && (
+                                    <em className="mt-proj">{w.proj} pts</em>
+                                  )}
+                                </span>
+                                <span className="mt-meta">
+                                  {w.team}
+                                  {w.pct_owned != null
+                                    ? ` · ${w.pct_owned}% rostered`
+                                    : ""}
+                                  {w.bye ? ` · bye ${w.bye}` : ""}
+                                  {w.injury ? ` · ${w.injury}` : ""}
+                                  {g && g.implied != null
+                                    ? ` · impl ${g.implied}`
+                                    : ""}
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </section>
+                    ) : null
                   )}
                 </div>
               )

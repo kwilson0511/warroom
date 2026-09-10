@@ -57,6 +57,20 @@ create table if not exists draft_picks (
 
 create index if not exists draft_picks_league_idx on draft_picks (league);
 
+-- ---- Waivers (per-league free-agent pool, refreshed with rosters) --------
+-- Top available players per league with their weekly projection (league
+-- scoring). Powers the Waivers view. player_id is our Sleeper id.
+create table if not exists waivers (
+  league     text not null,
+  player_id  text not null,
+  proj       numeric,
+  pct_owned  numeric,
+  updated_at timestamptz default now(),
+  primary key (league, player_id)
+);
+
+create index if not exists waivers_league_idx on waivers (league);
+
 -- ---- News items (refreshed daily from RSS) -----------------
 create table if not exists news (
   id          text primary key,          -- hash of the article URL
@@ -152,3 +166,4 @@ alter table sleepers    enable row level security;
 alter table depth_chart enable row level security;
 alter table leagues     enable row level security;
 alter table draft_picks enable row level security;
+alter table waivers     enable row level security;
