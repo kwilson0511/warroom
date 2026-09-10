@@ -545,6 +545,67 @@ async function syncEspnPicks(raw) {
   }
 }
 
+// ---- Sleeper league sync -----------------------------------
+// Sleeper's API is public (no cookies). Player IDs are our IDs, so no name
+// matching, and Sleeper hands us each roster's set starters directly.
+const SLEEPER_LEAGUES = [
+  { league: "l3", sleeperId: "1383593560535748608", kyleTeam: "tuten my pants" },
+];
+
+async function syncSleeperPicks() {
+  for (const cfg of SLEEPER_LEAGUES) {
+    try {
+      const [users, rosters] = await Promise.all([
+        fetch(`https://api.sleeper.app/v1/league/${cfg.sleeperId}/users`).then((r) => r.json()),
+        fetch(`https://api.sleeper.app/v1/league/${cfg.sleeperId}/rosters`).then((r) => r.json()),
+      ]);
+      if (!Array.isArray(rosters)) continue;
+      const teamName = {};
+      (users || []).forEach((u) => {
+        teamName[u.user_id] = ((u.metadata && u.metadata.team_name) || u.display_name || "").toLowerCase();
+      });
+      const now = new Date().toISOString();
+      const rows = [];
+      for (const r of rosters) {
+        const isKyle = teamName[r.owner_id] === cfg.kyleTeam;
+        const status = isKyle ? "kyle" : "taken";
+        const starters = new Set(r.starters || []);
+        for (const pid of r.players || []) {
+          if (!pid || pid === "0") continue;
+          rows.push({
+            league: cfg.league,
+            player_id: String(pid),
+            status,
+            proj: null, // Sleeper projections are a later add
+            starter: isKyle ? starters.has(pid) : false,
+            updated_at: now,
+          });
+        }
+      }
+      const seen = new Set();
+      const deduped = rows.filter((r) => {
+        if (seen.has(r.player_id)) return false;
+        seen.add(r.player_id);
+        return true;
+      });
+      const del = await supabase.from("draft_picks").delete().eq("league", cfg.league);
+      if (del.error) throw del.error;
+      for (let i = 0; i < deduped.length; i += 100) {
+        const { error } = await supabase.from("draft_picks").insert(deduped.slice(i, i + 100));
+        if (error) throw error;
+      }
+      const kyleN = deduped.filter((r) => r.status === "kyle").length;
+      console.log(
+        `  ${cfg.league} (Sleeper): ${deduped.length} picks (kyle ${kyleN}, taken ${
+          deduped.length - kyleN
+        })`
+      );
+    } catch (e) {
+      console.warn(`  Sleeper sync failed for ${cfg.league}: ${e.message} — picks left as-is`);
+    }
+  }
+}
+
 // ---- run ---------------------------------------------------
 async function main() {
   const raw = await fetchSleeperPlayers();
@@ -553,6 +614,7 @@ async function main() {
   await refreshDepthChart(raw);
   await refreshNews(players);
   await syncEspnPicks(raw);
+  await syncSleeperPicks();
   console.log("Refresh complete.");
 }
 
