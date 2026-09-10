@@ -619,19 +619,51 @@ const SLEEPER_LEAGUES = [
   { league: "l3", sleeperId: "1383593560535748608", kyleTeam: "tuten my pants" },
 ];
 
-async function syncSleeperPicks() {
+async function syncSleeperPicks(raw) {
+  // Current week + this week's Sleeper projections (fetched once for all leagues).
+  let week = 1;
+  try {
+    const st = await fetch("https://api.sleeper.app/v1/state/nfl").then((r) => r.json());
+    week = st?.week || 1;
+  } catch {
+    /* keep default */
+  }
+  let projRows = [];
+  try {
+    projRows = await fetch(
+      `https://api.sleeper.com/projections/nfl/2026/${week}?season_type=regular&position[]=QB&position[]=RB&position[]=WR&position[]=TE&position[]=K&position[]=DEF&order_by=ppr`
+    ).then((r) => r.json());
+  } catch {
+    /* no projections */
+  }
+  if (!Array.isArray(projRows)) projRows = [];
+
+  const FANTASY = ["QB", "RB", "WR", "TE", "K", "DEF"];
+
   for (const cfg of SLEEPER_LEAGUES) {
     try {
-      const [users, rosters] = await Promise.all([
+      const [users, rosters, league] = await Promise.all([
         fetch(`https://api.sleeper.app/v1/league/${cfg.sleeperId}/users`).then((r) => r.json()),
         fetch(`https://api.sleeper.app/v1/league/${cfg.sleeperId}/rosters`).then((r) => r.json()),
+        fetch(`https://api.sleeper.app/v1/league/${cfg.sleeperId}`).then((r) => r.json()),
       ]);
       if (!Array.isArray(rosters)) continue;
+
+      // Pick the projection field that matches the league's reception scoring.
+      const rec = league?.scoring_settings?.rec ?? 1;
+      const field = rec >= 1 ? "pts_ppr" : rec >= 0.5 ? "pts_half_ppr" : "pts_std";
+      const projById = {};
+      for (const pr of projRows) {
+        const v = pr.stats && pr.stats[field];
+        if (pr.player_id && v != null) projById[pr.player_id] = Math.round(v * 10) / 10;
+      }
+
       const teamName = {};
       (users || []).forEach((u) => {
         teamName[u.user_id] = ((u.metadata && u.metadata.team_name) || u.display_name || "").toLowerCase();
       });
       const now = new Date().toISOString();
+      const rostered = new Set();
       const rows = [];
       for (const r of rosters) {
         const isKyle = teamName[r.owner_id] === cfg.kyleTeam;
@@ -639,11 +671,12 @@ async function syncSleeperPicks() {
         const starters = new Set(r.starters || []);
         for (const pid of r.players || []) {
           if (!pid || pid === "0") continue;
+          rostered.add(String(pid));
           rows.push({
             league: cfg.league,
             player_id: String(pid),
             status,
-            proj: null, // Sleeper projections are a later add
+            proj: isKyle ? projById[pid] ?? null : null,
             starter: isKyle ? starters.has(pid) : false,
             updated_at: now,
           });
@@ -662,6 +695,21 @@ async function syncSleeperPicks() {
           deduped.length - kyleN
         })`
       );
+
+      // Waivers: available (unrostered) fantasy players ranked by projection.
+      const wrows = [];
+      for (const pr of projRows) {
+        const pid = String(pr.player_id);
+        if (rostered.has(pid)) continue;
+        const pos = raw[pid]?.position;
+        if (!FANTASY.includes(pos)) continue;
+        const proj = projById[pid];
+        if (proj == null || proj <= 0) continue;
+        wrows.push({ league: cfg.league, player_id: pid, proj, pct_owned: null, updated_at: now });
+      }
+      wrows.sort((a, b) => b.proj - a.proj);
+      await replaceLeagueRows("waivers", cfg.league, wrows.slice(0, 80));
+      console.log(`  ${cfg.league} waivers: ${Math.min(wrows.length, 80)} free agents`);
     } catch (e) {
       console.warn(`  Sleeper sync failed for ${cfg.league}: ${e.message} — picks left as-is`);
     }
@@ -676,7 +724,7 @@ async function main() {
   await refreshDepthChart(raw);
   await refreshNews(players);
   await syncEspnPicks(raw);
-  await syncSleeperPicks();
+  await syncSleeperPicks(raw);
   console.log("Refresh complete.");
 }
 
