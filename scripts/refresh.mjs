@@ -131,6 +131,26 @@ async function upsertBatched(table, rows) {
   }
 }
 
+// Safely replace a league's draft_picks: upsert the new rows FIRST, then remove
+// only rows no longer present. Never deletes-then-fails into an empty league.
+// A no-op on empty input, so a failed roster fetch can't wipe a league.
+async function replaceLeaguePicks(league, rows) {
+  if (!rows.length) return;
+  for (let i = 0; i < rows.length; i += 100) {
+    const { error } = await supabase
+      .from("draft_picks")
+      .upsert(rows.slice(i, i + 100), { onConflict: "league,player_id" });
+    if (error) throw error;
+  }
+  const keep = rows.map((r) => r.player_id).join(",");
+  const { error } = await supabase
+    .from("draft_picks")
+    .delete()
+    .eq("league", league)
+    .not("player_id", "in", `(${keep})`);
+  if (error) throw error;
+}
+
 // ---- Sleeper player dump (fetched once, reused for players + rookies) ----
 async function fetchSleeperPlayers() {
   console.log("Fetching Sleeper players…");
@@ -521,14 +541,7 @@ async function syncEspnPicks(raw) {
         return true;
       });
 
-      const del = await supabase.from("draft_picks").delete().eq("league", cfg.league);
-      if (del.error) throw del.error;
-      for (let i = 0; i < deduped.length; i += 100) {
-        const { error } = await supabase
-          .from("draft_picks")
-          .insert(deduped.slice(i, i + 100));
-        if (error) throw error;
-      }
+      await replaceLeaguePicks(cfg.league, deduped);
       const mineN = deduped.filter((r) => r.status === "mine").length;
       const kyleN = deduped.filter((r) => r.status === "kyle").length;
       const startN = deduped.filter((r) => r.starter).length;
@@ -588,12 +601,7 @@ async function syncSleeperPicks() {
         seen.add(r.player_id);
         return true;
       });
-      const del = await supabase.from("draft_picks").delete().eq("league", cfg.league);
-      if (del.error) throw del.error;
-      for (let i = 0; i < deduped.length; i += 100) {
-        const { error } = await supabase.from("draft_picks").insert(deduped.slice(i, i + 100));
-        if (error) throw error;
-      }
+      await replaceLeaguePicks(cfg.league, deduped);
       const kyleN = deduped.filter((r) => r.status === "kyle").length;
       console.log(
         `  ${cfg.league} (Sleeper): ${deduped.length} picks (kyle ${kyleN}, taken ${
